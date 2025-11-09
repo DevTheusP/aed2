@@ -85,6 +85,11 @@ FILE *disciplinas_idx;
 FILE *matriculas_dat;
 FILE *matriculas_idx;
 
+//Definição das funções da arvore b
+void inserir_na_arvore_b(FILE *arquivo_idx, int chave, long offset_dado);
+void dividir_filho(FILE *arquivo_idx, BtreeNode *no_pai, int indice_filho, BtreeNode *filho_cheio);
+void inserir_nao_cheio(FILE *arquivo_idx, BtreeNode *no, int chave, long offset_dado);
+
 // GERENCIADOR DE ARQUIVOS .DAT
 
 // Função para ler um registro dado um offset
@@ -407,4 +412,182 @@ long buscar_na_arvore_b(FILE *arquivo_idx, int chave) {
 
     //dale busca recursiva
     return buscar_no_recursivo(arquivo_idx, header.offset_raiz, chave);
+}
+//função para ler um aluno pela matricula
+//retorna um ponteiro para um Aluno alocado dinamicamente
+//retorna NULL se não encontrar nada ou se o aluno estiver inativo
+Aluno* ler_aluno(int matricula){
+    // Usar a arvore B para encontrar o offset do dado no .dat
+    long offset_dado = buscar_na_arvore_b(alunos_idx, matricula);
+    if (offset_dado == -1) {
+            //não encontrado no índice
+        printf("Aluno com matrícula %d não encontrado no índice.\n", matricula);
+        return NULL;
+    }
+    // aloca memória para o resultado
+    Aluno *aluno_buffer = (Aluno*)malloc(sizeof(Aluno));
+    if(aluno_buffer == NULL) {
+        perror("Erro: Falha ao alocar memória para ler aluno");
+        return NULL;
+    }
+
+    if(!ler_registro(aluno_buffer, sizeof(Aluno), offset_dado, alunos_dat)) {
+        fprintf(stderr, "Erro: Índice encontrou o offset, mas a leitura do .dat falhou!");
+        free(aluno_buffer);
+        return NULL;
+    }
+    if (aluno_buffer->ativo == 0) {
+        printf("Aluno com matrícula %d foi encontrado, mas está marcado como removido.\n", matricula);
+        free(aluno_buffer);
+        return NULL;
+    }
+
+    return aluno_buffer;
+}  
+void criar_aluno(int matricula, char *nome) {
+    // primeiro checar se a matrícula já existe
+    if(buscar_na_arvore_b(alunos_idx, matricula) != -1) {
+        printf("Erro: Aluno com matrícula %d já existe.\n", matricula);
+        return;
+    }
+    // criar o registro do aluno na memória
+    Aluno novo_aluno;
+    novo_aluno.matricula = matricula;
+    strncpy(novo_aluno.nome_aluno, nome, TAM_NOME_ALUNO);
+    novo_aluno.nome_aluno[TAM_NOME_ALUNO - 1] = '\0';
+    novo_aluno.ativo = 1;
+
+    // apendar o registro no arquivo .dat
+    long offset_dado = apendar_registro(&novo_aluno, sizeof(Aluno), alunos_dat);
+
+    if(offset_dado == -1) {
+        fprintf(stderr, "Erro: falha ao salvar novo aluno no .dat\n");
+        return;
+    }
+    // inserir a chave e o ofsset nbo .idx
+    inserir_na_arvore_b(alunos_idx, matricula, offset_dado);
+
+    printf("Aluno %d - %s criado com sucesso.\n", matricula, nome);
+}
+
+Disciplina* ler_disciplina(int codigo) {
+    long offset_dado = buscar_na_arvore_b(disciplinas_idx, codigo);
+    if(offset_dado == -1){
+        printf("Disciplina com código %d não encontrada no índice.\n", codigo);
+        return NULL;
+    }
+    Disciplina *disciplina_buffer = (Disciplina*)malloc(sizeof(Disciplina));
+    if(disciplina_buffer == NULL) {
+        perror("Erro: Falha ao alocar memória para ler disciplina");
+        return NULL;
+    }
+    if(!ler_registro(disciplina_buffer, sizeof(Disciplina), offset_dado, disciplinas_dat)) {
+        fprintf(stderr, "Erro: índice encontrou o offset, mas a leitura do .dat falhou (offset: %ld)\n", offset_dado);
+        free(disciplina_buffer);
+        return NULL;
+    }
+    if (disciplina_buffer->ativo == 0) {
+        printf("Disciplina com código %d foi encontrada, mas está marcada como removida.\n", codigo);
+        free(disciplina_buffer);
+        return NULL;
+    }
+    return disciplina_buffer;
+}
+
+void criar_disciplina(int codigo, char *nome) {
+    if(buscar_na_arvore_b(disciplinas_idx, codigo) != -1){
+        printf("Erro: Disciplina com código %d já existe.\n", codigo);
+        return;
+    }
+    Disciplina nova_disciplina;
+    nova_disciplina.codigo_disciplina = codigo;
+    strncpy(nova_disciplina.nome_disciplina, nome, TAM_NOME_DISCIPLINA);
+    nova_disciplina.nome_disciplina[TAM_NOME_DISCIPLINA - 1] = '\0';
+    nova_disciplina.ativo = 1;
+
+    long offset_dado = apendar_registro(&nova_disciplina, sizeof(Disciplina), disciplinas_dat);
+    if(offset_dado == -1){
+        fprintf(stderr, "Erro: Falha ao salvar nova disciplina no .dat\n");
+        return;
+    }
+
+    inserir_na_arvore_b(disciplinas_idx, codigo, offset_dado);
+
+    printf("Disciplina %d - %s criada com sucesso.\n", codigo, nome);
+
+}
+
+void inserir_na_arvore_b(FILE *arquivo_idx, int chave, long offset_dado) {
+    // Ler o cabeçalho para achar a raiz
+    BTreeHeader header;
+    ler_cabecalho_idx(&header, arquivo_idx);
+    //ler o nó raiz
+    BtreeNode raiz;
+    if(!ler_no_idx(&raiz, header.offset_raiz, arquivo_idx)) {
+        fprintf(stderr, "Erro fatal: Não foi possível ler o nó raiz.\n");
+        return;
+    }
+
+    // verifica se a raiz ta cheia T= 3 -> MAX CHAVES = 5)
+    if(raiz.num_chaves == MAX_CHAVES){
+        // raiz ta cheia
+        //precisa criar uma raiz nova e dividir a antiga
+
+        long offset_nova_raiz = obter_proximo_offset_livre(arquivo_idx);
+        BtreeNode nova_raiz;
+        nova_raiz.meu_offset = offset_nova_raiz;
+        nova_raiz.eh_folha = 0; // nova raiz nunca é uma folha
+        nova_raiz.num_chaves = 0; // starta vazia
+
+        // a raiz antiga vira o primeiro e unico filho da nova raiz
+        nova_raiz.offsets_filhos[0] = header.offset_raiz;
+
+        //dividir a raiz antiga
+        //funcao dividir filho vai 'promover' a chave do meio da raiz antiga para nova raiz
+        dividir_filho(arquivo_idx, &nova_raiz, 0 , &raiz);
+
+        //finalmente ta pronto
+        // dale inserir
+        // a chave nao vai pra nova mas pra um dos filhos dela
+        inserir_nao_cheio(arquivo_idx, &nova_raiz, chave, offset_dado);
+
+        // atualiza o cabecalho no disco pra aponta pra nova raiz
+        header.offset_raiz = offset_nova_raiz;
+        escrever_cabecalho_idx(&nova_raiz, arquivo_idx);
+        //atualiza a nova raiz no disco
+        escrever_no_idx(&nova_raiz, arquivo_idx);
+
+
+    }else{
+        // a raiz nao ta cheia
+        // so dale
+        inserir_nao_cheio(arquivo_idx, &raiz, chave, offset_dado);
+        
+    }
+}
+
+Matricula* ler_matricula(int id_matricula) {
+    long offset_matricula = buscar_na_arvore_b(matriculas_idx, id_matricula);
+    if(offset_matricula == -1){
+        printf("Matricula com código %d não encontrada no índice.\n", id_matricula);
+        return NULL;
+    }
+    Matricula *matricula_buffer = (Matricula*)malloc(sizeof(Matricula));
+    if(matricula_buffer == NULL) {
+        perror("Erro: Falha ao alocar memória para ler matricula");
+        return NULL;
+    }
+    if(!ler_registro(matricula_buffer, sizeof(Matricula), offset_matricula, matriculas_dat)) {
+        fprintf(stderr, "Erro: índice encontrou o offset, mas a leitura do .dat falhou (offset: %ld)\n", offset_matricula);
+        free(matricula_buffer);
+        return NULL;
+    }
+    // 4. Checar se o registro está marcado como 'ativo'
+    if (matricula_buffer->ativo == 0) {
+        printf("Matrícula com ID %d foi encontrada, mas está marcada como removida.\n", id_matricula);
+        free(matricula_buffer);
+        return NULL;
+    }
+    return matricula_buffer;
+
 }
