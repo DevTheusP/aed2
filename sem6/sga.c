@@ -553,7 +553,7 @@ void inserir_na_arvore_b(FILE *arquivo_idx, int chave, long offset_dado) {
 
         // atualiza o cabecalho no disco pra aponta pra nova raiz
         header.offset_raiz = offset_nova_raiz;
-        escrever_cabecalho_idx(&nova_raiz, arquivo_idx);
+        escrever_cabecalho_idx(&header, arquivo_idx);
         //atualiza a nova raiz no disco
         escrever_no_idx(&nova_raiz, arquivo_idx);
 
@@ -591,7 +591,33 @@ Matricula* ler_matricula(int id_matricula) {
     return matricula_buffer;
 
 }
+int verificar_matricula_duplicada(int matricula_aluno, int codigo_disciplina) {
+    fseek(matriculas_dat, 0, SEEK_END);
+    long tamanho = ftell(matriculas_dat);
+    fseek(matriculas_dat, 0, SEEK_SET);
+    
+    long offset = 0;
+    Matricula mat;
+    
+    while (offset < tamanho) {
+        if (ler_registro(&mat, sizeof(Matricula), offset, matriculas_dat)) {
+            if (mat.ativo && 
+                mat.matricula_aluno == matricula_aluno && 
+                mat.codigo_disciplina == codigo_disciplina) {
+                return 1; // Já existe
+            }
+        }
+        offset += sizeof(Matricula);
+    }
+    return 0; // Não existe
+}
 void criar_matricula(int matricula_aluno, int codigo_disciplina, float media_final) {
+    // Adicionar em criar_matricula():
+    if (verificar_matricula_duplicada(matricula_aluno, codigo_disciplina)) {
+        printf("Erro: Aluno %d já está matriculado na disciplina %d.\n", 
+           matricula_aluno, codigo_disciplina);
+        return;
+    }
     // verifica se o aluno existe
     if (buscar_na_arvore_b(alunos_idx, matricula_aluno) == -1) {
         printf("Erro: Não foi possível criar matrícula. Aluno %d não encontrado.\n", matricula_aluno);
@@ -603,6 +629,7 @@ void criar_matricula(int matricula_aluno, int codigo_disciplina, float media_fin
         printf("Erro: Não foi possível criar matrícula. Disciplina %d não encontrada.\n", codigo_disciplina);
         return;
     }
+
     // gera o proximo id da matricula sequencial
     BTreeHeader header_mat;
     if (!ler_cabecalho_idx(&header_mat, matriculas_idx)) {
@@ -936,4 +963,1283 @@ void remover_da_arvore_b(FILE *arquivo_idx, int chave) {
     }
 }
 
-// falta fazer fundir filho e redistribuir esquerda e direita
+void fundir_filho(FILE *arquivo_idx, BtreeNode *no_pai, int indice_filho){
+    BtreeNode filho_esq;
+    BtreeNode filho_dir;
+
+    ler_no_idx(&filho_esq, no_pai->offsets_filhos[indice_filho], arquivo_idx);
+    ler_no_idx(&filho_dir, no_pai->offsets_filhos[indice_filho + 1], arquivo_idx);
+
+    //puxa a chave do indice i do pai para o filho esquerdo
+    filho_esq.chaves[T - 1] = no_pai->chaves[indice_filho];
+    filho_esq.offsets_dados[T - 1] = no_pai->offsets_dados[indice_filho];
+    filho_esq.num_chaves++;
+
+    // move todas as chaves do filho da direita para o final do filho esquerdo, depois de puxar o i do pai pra baixo
+    for (int j = 0; j < T - 1; j++) {
+        filho_esq.chaves[T + j] = filho_dir.chaves[j];
+        filho_esq.offsets_dados[T + j] = filho_dir.offsets_dados[j];
+    }
+    filho_esq.num_chaves += filho_dir.num_chaves;
+    // se ele não for folha, tenque mover os ponteiros dos filhos
+    if (!filho_esq.eh_folha) {
+        for (int j = 0; j < T; j++) {
+            filho_esq.offsets_filhos[T + j] = filho_dir.offsets_filhos[j];
+        }
+    }
+    // remover a chave i e o ponteiro para o filho do nó pai
+    // Deslocar chaves do pai
+    for (int j = indice_filho + 1; j < no_pai->num_chaves; j++) {
+        no_pai->chaves[j - 1] = no_pai->chaves[j];
+        no_pai->offsets_dados[j - 1] = no_pai->offsets_dados[j];
+    }
+    // puxar ponteiros de filhos do pai
+    for (int j = indice_filho + 2; j <= no_pai->num_chaves; j++) {
+        no_pai->offsets_filhos[j - 1] = no_pai->offsets_filhos[j];
+    }
+
+    no_pai->num_chaves--; // O pai perdeu uma chave
+    //salva tudo que modificou
+    escrever_no_idx(no_pai, arquivo_idx);
+    escrever_no_idx(&filho_esq, arquivo_idx);
+    // O nó 'filho_dir' é agora considerado "lixo" no arquivo (não o reescrevemos).
+
+    // Se o no_pai (raiz) ficou sem chaves, o próximo passo na remoção cuidará
+    // de fazer o filho_esq (o nó fundido) a nova raiz.
+}
+
+void redistribuir_da_esquerda(FILE *arquivo_idx, BtreeNode *no_pai, int indice_filho) {
+    
+    // carrega o filho 
+    BtreeNode filho;
+    ler_no_idx(&filho, no_pai->offsets_filhos[indice_filho], arquivo_idx);
+    
+    // carrega o irmao da esquerda
+    BtreeNode irmao_esq;
+    ler_no_idx(&irmao_esq, no_pai->offsets_filhos[indice_filho - 1], arquivo_idx);
+
+    // desloca todo o conteúdo do 'filho' (chaves e offsets) uma posição para a direita,
+    // abrindo espaço na primeira posição (índice 0)
+    for (int j = filho.num_chaves - 1; j >= 0; j--) {
+        filho.chaves[j + 1] = filho.chaves[j];
+        filho.offsets_dados[j + 1] = filho.offsets_dados[j];
+    }
+
+    // se o filho não for folha, deslocar também os offsets_filhos
+    if (!filho.eh_folha) {
+        for (int j = filho.num_chaves; j >= 0; j--) {
+            filho.offsets_filhos[j + 1] = filho.offsets_filhos[j];
+        }
+    }
+    
+    // a chave do pai (índice: indice_filho - 1) desce para a primeira posição do filho
+    filho.chaves[0] = no_pai->chaves[indice_filho - 1];
+    filho.offsets_dados[0] = no_pai->offsets_dados[indice_filho - 1];
+
+    // a ultima chave do 'irmao_esq' sobe para a posição que o pai liberou
+    no_pai->chaves[indice_filho - 1] = irmao_esq.chaves[irmao_esq.num_chaves - 1];
+    no_pai->offsets_dados[indice_filho - 1] = irmao_esq.offsets_dados[irmao_esq.num_chaves - 1];
+
+    // se o filho não for folha, o ponteiro de filho mais à direita do irmão (irmao_esq.offsets_filhos[num_chaves])
+    // se move para a primeira posição de filho do nó 'filho' (filho.offsets_filhos[0])
+    if (!filho.eh_folha) {
+        filho.offsets_filhos[0] = irmao_esq.offsets_filhos[irmao_esq.num_chaves];
+    }
+    
+    
+    filho.num_chaves++;
+    irmao_esq.num_chaves--;
+
+    escrever_no_idx(no_pai, arquivo_idx);
+    escrever_no_idx(&filho, arquivo_idx);
+    escrever_no_idx(&irmao_esq, arquivo_idx);
+}
+void redistribuir_da_direita(FILE *arquivo_idx, BtreeNode *no_pai, int indice_filho) {
+    
+    BtreeNode filho;
+    ler_no_idx(&filho, no_pai->offsets_filhos[indice_filho], arquivo_idx);
+    
+    BtreeNode irmao_dir;
+    ler_no_idx(&irmao_dir, no_pai->offsets_filhos[indice_filho + 1], arquivo_idx);
+
+    filho.chaves[filho.num_chaves] = no_pai->chaves[indice_filho];
+    filho.offsets_dados[filho.num_chaves] = no_pai->offsets_dados[indice_filho];
+    
+    // a primeira chave do 'irmao_dir' sobe para a posição que o pai liberou
+    no_pai->chaves[indice_filho] = irmao_dir.chaves[0];
+    no_pai->offsets_dados[indice_filho] = irmao_dir.offsets_dados[0];
+    
+    // se o filho não for folha, o primeiro ponteiro de filho do irmão (irmao_dir.offsets_filhos[0])
+    // se move para a última posição de filho do nó 'filho' (filho.offsets_filhos[num_chaves + 1])
+    if (!filho.eh_folha) {
+        filho.offsets_filhos[filho.num_chaves + 1] = irmao_dir.offsets_filhos[0];
+    }
+
+    // deslocar todo o conteúdo do 'irmao_dir' uma posição para a esquerda
+    for (int j = 1; j < irmao_dir.num_chaves; j++) {
+        irmao_dir.chaves[j - 1] = irmao_dir.chaves[j];
+        irmao_dir.offsets_dados[j - 1] = irmao_dir.offsets_dados[j];
+    }
+    
+    // se o irmão não for folha, deslocar os offsets_filhos
+    if (!irmao_dir.eh_folha) {
+        for (int j = 1; j <= irmao_dir.num_chaves; j++) {
+            irmao_dir.offsets_filhos[j - 1] = irmao_dir.offsets_filhos[j];
+        }
+    }
+    filho.num_chaves++;
+    irmao_dir.num_chaves--;
+
+    escrever_no_idx(no_pai, arquivo_idx);
+    escrever_no_idx(&filho, arquivo_idx);
+    escrever_no_idx(&irmao_dir, arquivo_idx);
+}
+//funcao pra remover matriculas
+int remover_matriculas_do_aluno(int matricula_aluno) {
+    int contador_removidas = 0;
+    
+    
+    // o certo seria fazer um indice secundaria por matricula aluno
+    //desse jeito ta linear = uma bosta
+    if (fseek(matriculas_dat, 0, SEEK_SET) != 0) {
+        perror("Erro ao buscar início do arquivo de matrículas");
+        return 0;
+    }
+    
+    // descobrir o tamanho do arquivo
+    fseek(matriculas_dat, 0, SEEK_END);
+    long tamanho_arquivo = ftell(matriculas_dat);
+    fseek(matriculas_dat, 0, SEEK_SET);
+    
+    // varrer todo o arquivo
+    long offset_atual = 0;
+    Matricula mat_buffer;
+    
+    while (offset_atual < tamanho_arquivo) {
+        // le o registro na posição atual
+        if (!ler_registro(&mat_buffer, sizeof(Matricula), offset_atual, matriculas_dat)) {
+            // se falhar, pula para o próximo registro
+            offset_atual += sizeof(Matricula);
+            continue;
+        }
+        
+        // verifica se a matrícula pertence ao aluno e está ativa
+        if (mat_buffer.ativo == 1 && mat_buffer.matricula_aluno == matricula_aluno) {
+            printf("  Removendo matrícula ID %d (Disciplina: %d, Média: %.2f)\n", 
+                   mat_buffer.id_matricula, mat_buffer.codigo_disciplina, mat_buffer.media_final);
+            
+            // marcar como inativo no .dat
+            mat_buffer.ativo = 0;
+            if (escrever_registro(&mat_buffer, sizeof(Matricula), offset_atual, matriculas_dat)) {
+                // remover do índice
+                remover_da_arvore_b(matriculas_idx, mat_buffer.id_matricula);
+                contador_removidas++;
+            } else {
+                fprintf(stderr, "  Erro ao marcar matrícula ID %d como inativa.\n", 
+                       mat_buffer.id_matricula);
+            }
+        }
+        
+        // avança pro o próximo registro
+        offset_atual += sizeof(Matricula);
+    }
+    
+    return contador_removidas;
+}
+
+// função principal de remoção física com cascata
+int remover_aluno_fisico(int matricula) {
+    printf("Iniciando remoção em cascata do aluno %d...\n", matricula);
+    
+    // busca o aluno
+    long offset_dado = buscar_na_arvore_b(alunos_idx, matricula);
+    
+    if (offset_dado == -1) {
+        printf("Erro: Aluno com matrícula %d não encontrado no índice.\n", matricula);
+        return 0;
+    }
+    
+    // le o registro
+    Aluno aluno_buffer;
+    if (!ler_registro(&aluno_buffer, sizeof(Aluno), offset_dado, alunos_dat)) {
+        fprintf(stderr, "Erro ao ler registro do aluno para remoção física.\n");
+        return 0;
+    }
+    
+    // verifica se ja ta inativo
+    if (aluno_buffer.ativo == 0) {
+        printf("Aluno %d já está marcado como inativo.\n", matricula);
+        return 0;
+    }
+    
+    // remove todas as matriculas do aluno
+    printf("Procurando matrículas do aluno %s (matrícula %d)...\n", 
+           aluno_buffer.nome_aluno, matricula);
+    
+    int num_matriculas_removidas = remover_matriculas_do_aluno(matricula);
+    
+    if (num_matriculas_removidas > 0) {
+        printf("Total de %d matrícula(s) removida(s) em cascata.\n", num_matriculas_removidas);
+    } else {
+        printf("Nenhuma matrícula encontrada para este aluno.\n");
+    }
+    
+    // marca o aluno como inativo
+    aluno_buffer.ativo = 0;
+    if (!escrever_registro(&aluno_buffer, sizeof(Aluno), offset_dado, alunos_dat)) {
+        fprintf(stderr, "Erro ao marcar aluno como inativo no .dat.\n");
+        return 0;
+    }
+    
+    // remove o aluno da arvore b
+    remover_da_arvore_b(alunos_idx, matricula);
+    
+    printf("Aluno %d (%s) removido fisicamente com sucesso!\n", 
+           matricula, aluno_buffer.nome_aluno);
+    printf("Total: 1 aluno + %d matrícula(s) removidas.\n", num_matriculas_removidas);
+    
+    return 1;
+}
+void atualizar_aluno(int matricula, char *novo_nome) {
+    long offset_dado = buscar_na_arvore_b(alunos_idx, matricula);
+    
+    if (offset_dado == -1) {
+        printf("Erro: Aluno %d não encontrado.\n", matricula);
+        return;
+    }
+    
+    Aluno aluno_buffer;
+    if (!ler_registro(&aluno_buffer, sizeof(Aluno), offset_dado, alunos_dat)) {
+        fprintf(stderr, "Erro ao ler aluno para atualização.\n");
+        return;
+    }
+    
+    if (aluno_buffer.ativo == 0) {
+        printf("Erro: Aluno %d está inativo.\n", matricula);
+        return;
+    }
+    
+    // Atualizar o nome
+    strncpy(aluno_buffer.nome_aluno, novo_nome, TAM_NOME_ALUNO);
+    aluno_buffer.nome_aluno[TAM_NOME_ALUNO - 1] = '\0';
+    
+    // Escrever de volta
+    if (escrever_registro(&aluno_buffer, sizeof(Aluno), offset_dado, alunos_dat)) {
+        printf("Aluno %d atualizado: %s\n", matricula, novo_nome);
+    } else {
+        fprintf(stderr, "Erro ao atualizar aluno.\n");
+    }
+}
+void atualizar_disciplina(int codigo, char *novo_nome) {
+    long offset_dado = buscar_na_arvore_b(disciplinas_idx, codigo);
+    
+    if (offset_dado == -1) {
+        printf("Erro: Disciplina %d não encontrada.\n", codigo);
+        return;
+    }
+    
+    Disciplina disc_buffer;
+    if (!ler_registro(&disc_buffer, sizeof(Disciplina), offset_dado, disciplinas_dat)) {
+        fprintf(stderr, "Erro ao ler disciplina para atualização.\n");
+        return;
+    }
+    
+    if (disc_buffer.ativo == 0) {
+        printf("Erro: Disciplina %d está inativa.\n", codigo);
+        return;
+    }
+    
+    strncpy(disc_buffer.nome_disciplina, novo_nome, TAM_NOME_DISCIPLINA);
+    disc_buffer.nome_disciplina[TAM_NOME_DISCIPLINA - 1] = '\0';
+    
+    if (escrever_registro(&disc_buffer, sizeof(Disciplina), offset_dado, disciplinas_dat)) {
+        printf("Disciplina %d atualizada: %s\n", codigo, novo_nome);
+    } else {
+        fprintf(stderr, "Erro ao atualizar disciplina.\n");
+    }
+}
+
+void atualizar_media_matricula(int id_matricula, float nova_media) {
+    long offset_dado = buscar_na_arvore_b(matriculas_idx, id_matricula);
+    
+    if (offset_dado == -1) {
+        printf("Erro: Matrícula ID %d não encontrada.\n", id_matricula);
+        return;
+    }
+    
+    Matricula mat_buffer;
+    if (!ler_registro(&mat_buffer, sizeof(Matricula), offset_dado, matriculas_dat)) {
+        fprintf(stderr, "Erro ao ler matrícula para atualização.\n");
+        return;
+    }
+    
+    if (mat_buffer.ativo == 0) {
+        printf("Erro: Matrícula ID %d está inativa.\n", id_matricula);
+        return;
+    }
+    
+    float media_antiga = mat_buffer.media_final;
+    mat_buffer.media_final = nova_media;
+    
+    if (escrever_registro(&mat_buffer, sizeof(Matricula), offset_dado, matriculas_dat)) {
+        printf("Matrícula ID %d atualizada:\n", id_matricula);
+        printf("  Aluno: %d | Disciplina: %d\n", 
+               mat_buffer.matricula_aluno, mat_buffer.codigo_disciplina);
+        printf("  Média: %.2f → %.2f\n", media_antiga, nova_media);
+    } else {
+        fprintf(stderr, "Erro ao atualizar média.\n");
+    }
+}
+
+int remover_matricula_fisica(int id_matricula) {
+    long offset_dado = buscar_na_arvore_b(matriculas_idx, id_matricula);
+    
+    if (offset_dado == -1) {
+        printf("Erro: Matrícula ID %d não encontrada.\n", id_matricula);
+        return 0;
+    }
+    
+    Matricula mat_buffer;
+    if (!ler_registro(&mat_buffer, sizeof(Matricula), offset_dado, matriculas_dat)) {
+        fprintf(stderr, "Erro ao ler matrícula para remoção.\n");
+        return 0;
+    }
+    
+    if (mat_buffer.ativo == 0) {
+        printf("Matrícula ID %d já está inativa.\n", id_matricula);
+        return 0;
+    }
+    
+    // Marcar como inativo
+    mat_buffer.ativo = 0;
+    escrever_registro(&mat_buffer, sizeof(Matricula), offset_dado, matriculas_dat);
+    
+    // Remover do índice
+    remover_da_arvore_b(matriculas_idx, id_matricula);
+    
+    printf("Matrícula ID %d removida (Aluno: %d, Disciplina: %d).\n",
+           id_matricula, mat_buffer.matricula_aluno, mat_buffer.codigo_disciplina);
+    
+    return 1;
+}
+// Função auxiliar para remover matrículas de uma disciplina
+int remover_matriculas_da_disciplina(int codigo_disciplina) {
+    int contador_removidas = 0;
+    
+    if (fseek(matriculas_dat, 0, SEEK_SET) != 0) {
+        perror("Erro ao buscar início do arquivo de matrículas");
+        return 0;
+    }
+    
+    fseek(matriculas_dat, 0, SEEK_END);
+    long tamanho_arquivo = ftell(matriculas_dat);
+    fseek(matriculas_dat, 0, SEEK_SET);
+    
+    long offset_atual = 0;
+    Matricula mat_buffer;
+    
+    while (offset_atual < tamanho_arquivo) {
+        if (!ler_registro(&mat_buffer, sizeof(Matricula), offset_atual, matriculas_dat)) {
+            offset_atual += sizeof(Matricula);
+            continue;
+        }
+        
+        if (mat_buffer.ativo == 1 && mat_buffer.codigo_disciplina == codigo_disciplina) {
+            printf("  → Removendo matrícula ID %d (Aluno: %d, Média: %.2f)\n", 
+                   mat_buffer.id_matricula, mat_buffer.matricula_aluno, mat_buffer.media_final);
+            
+            mat_buffer.ativo = 0;
+            if (escrever_registro(&mat_buffer, sizeof(Matricula), offset_atual, matriculas_dat)) {
+                remover_da_arvore_b(matriculas_idx, mat_buffer.id_matricula);
+                contador_removidas++;
+            }
+        }
+        
+        offset_atual += sizeof(Matricula);
+    }
+    
+    return contador_removidas;
+}
+int remover_disciplina_fisica(int codigo) {
+    
+    long offset_dado = buscar_na_arvore_b(disciplinas_idx, codigo);
+    
+    if (offset_dado == -1) {
+        printf("✗ Erro: Disciplina %d não encontrada.\n\n", codigo);
+        return 0;
+    }
+    
+    Disciplina disc_buffer;
+    if (!ler_registro(&disc_buffer, sizeof(Disciplina), offset_dado, disciplinas_dat)) {
+        fprintf(stderr, "✗ Erro ao ler disciplina.\n\n");
+        return 0;
+    }
+    
+    if (disc_buffer.ativo == 0) {
+        printf("✗ Disciplina %d já está inativa.\n\n", codigo);
+        return 0;
+    }
+    
+    printf("Etapa 1: Procurando matrículas da disciplina %s...\n", disc_buffer.nome_disciplina);
+    
+    int num_matriculas_removidas = remover_matriculas_da_disciplina(codigo);
+    
+    if (num_matriculas_removidas > 0) {
+        printf("  ✓ %d matrícula(s) removida(s).\n\n", num_matriculas_removidas);
+    } else {
+        printf("  • Nenhuma matrícula encontrada.\n\n");
+    }
+    
+    printf("Etapa 2: Removendo disciplina do arquivo de dados...\n");
+    disc_buffer.ativo = 0;
+    if (!escrever_registro(&disc_buffer, sizeof(Disciplina), offset_dado, disciplinas_dat)) {
+        fprintf(stderr, "  ✗ Erro ao marcar disciplina como inativa.\n\n");
+        return 0;
+    }
+    printf("  ✓ Disciplina marcada como inativa no .dat\n\n");
+    
+    printf("Etapa 3: Removendo disciplina da árvore B...\n");
+    remover_da_arvore_b(disciplinas_idx, codigo);
+    printf("  ✓ Disciplina removida do índice\n\n");
+    
+    return 1;
+}
+
+
+
+
+
+
+
+// I.A que fez essas de listagem
+void listar_todos_alunos() {
+    printf("\n╔════════════════════════════════════════════════════════════╗\n");
+    printf("║                    LISTA DE ALUNOS                         ║\n");
+    printf("╚════════════════════════════════════════════════════════════╝\n\n");
+    
+    // Descobrir tamanho do arquivo
+    if (fseek(alunos_dat, 0, SEEK_END) != 0) {
+        perror("Erro ao buscar final do arquivo de alunos");
+        return;
+    }
+    
+    long tamanho = ftell(alunos_dat);
+    if (tamanho == -1) {
+        perror("Erro ao obter tamanho do arquivo");
+        return;
+    }
+    
+    // Voltar ao início
+    fseek(alunos_dat, 0, SEEK_SET);
+    
+    long offset = 0;
+    int contador = 0;
+    Aluno aluno;
+    
+    printf("┌──────┬─────────────┬────────────────────────────────────────┐\n");
+    printf("│  Nº  │  Matrícula  │              Nome do Aluno             │\n");
+    printf("├──────┼─────────────┼────────────────────────────────────────┤\n");
+    
+    while (offset < tamanho) {
+        if (ler_registro(&aluno, sizeof(Aluno), offset, alunos_dat)) {
+            if (aluno.ativo == 1) {
+                printf("│ %4d │    %6d   │ %-38s │\n", 
+                       ++contador, aluno.matricula, aluno.nome_aluno);
+            }
+        }
+        offset += sizeof(Aluno);
+    }
+    
+    printf("└──────┴─────────────┴────────────────────────────────────────┘\n");
+    
+    if (contador == 0) {
+        printf("\n  ⚠️  Nenhum aluno cadastrado no sistema.\n");
+    } else {
+        printf("\n  ✓ Total: %d aluno(s) cadastrado(s)\n", contador);
+    }
+    printf("\n");
+}
+// Lista todas as disciplinas cadastradas (ativas)
+void listar_todas_disciplinas() {
+    printf("\n╔════════════════════════════════════════════════════════════╗\n");
+    printf("║                  LISTA DE DISCIPLINAS                      ║\n");
+    printf("╚════════════════════════════════════════════════════════════╝\n\n");
+    
+    if (fseek(disciplinas_dat, 0, SEEK_END) != 0) {
+        perror("Erro ao buscar final do arquivo de disciplinas");
+        return;
+    }
+    
+    long tamanho = ftell(disciplinas_dat);
+    if (tamanho == -1) {
+        perror("Erro ao obter tamanho do arquivo");
+        return;
+    }
+    
+    fseek(disciplinas_dat, 0, SEEK_SET);
+    
+    long offset = 0;
+    int contador = 0;
+    Disciplina disciplina;
+    
+    printf("┌──────┬─────────┬──────────────────────────────────────────────┐\n");
+    printf("│  Nº  │ Código  │           Nome da Disciplina                 │\n");
+    printf("├──────┼─────────┼──────────────────────────────────────────────┤\n");
+    
+    while (offset < tamanho) {
+        if (ler_registro(&disciplina, sizeof(Disciplina), offset, disciplinas_dat)) {
+            if (disciplina.ativo == 1) {
+                printf("│ %4d │  %5d  │ %-44s │\n", 
+                       ++contador, 
+                       disciplina.codigo_disciplina, 
+                       disciplina.nome_disciplina);
+            }
+        }
+        offset += sizeof(Disciplina);
+    }
+    
+    printf("└──────┴─────────┴──────────────────────────────────────────────┘\n");
+    
+    if (contador == 0) {
+        printf("\n  ⚠️  Nenhuma disciplina cadastrada no sistema.\n");
+    } else {
+        printf("\n  ✓ Total: %d disciplina(s) cadastrada(s)\n", contador);
+    }
+    printf("\n");
+}
+
+// Lista todas as matrículas cadastradas (ativas)
+void listar_todas_matriculas() {
+    printf("\n╔═══════════════════════════════════════════════════════════════════════════╗\n");
+    printf("║                          LISTA DE MATRÍCULAS                              ║\n");
+    printf("╚═══════════════════════════════════════════════════════════════════════════╝\n\n");
+    
+    if (fseek(matriculas_dat, 0, SEEK_END) != 0) {
+        perror("Erro ao buscar final do arquivo de matrículas");
+        return;
+    }
+    
+    long tamanho = ftell(matriculas_dat);
+    if (tamanho == -1) {
+        perror("Erro ao obter tamanho do arquivo");
+        return;
+    }
+    
+    fseek(matriculas_dat, 0, SEEK_SET);
+    
+    long offset = 0;
+    int contador = 0;
+    Matricula matricula;
+    
+    printf("┌──────┬──────┬─────────────┬─────────┬──────────────────────────┬───────┐\n");
+    printf("│  Nº  │  ID  │  Matrícula  │ Cód.Dis │     Nome Disciplina      │ Média │\n");
+    printf("├──────┼──────┼─────────────┼─────────┼──────────────────────────┼───────┤\n");
+    
+    while (offset < tamanho) {
+        if (ler_registro(&matricula, sizeof(Matricula), offset, matriculas_dat)) {
+            if (matricula.ativo == 1) {
+                // Buscar nome da disciplina para exibir
+                Disciplina *disc = ler_disciplina(matricula.codigo_disciplina);
+                
+                printf("│ %4d │ %4d │    %6d   │  %5d  │ %-24s │ %5.2f │\n",
+                       ++contador,
+                       matricula.id_matricula,
+                       matricula.matricula_aluno,
+                       matricula.codigo_disciplina,
+                       disc ? disc->nome_disciplina : "N/A",
+                       matricula.media_final);
+                
+                if (disc) free(disc);
+            }
+        }
+        offset += sizeof(Matricula);
+    }
+    
+    printf("└──────┴──────┴─────────────┴─────────┴──────────────────────────┴───────┘\n");
+    
+    if (contador == 0) {
+        printf("\n  ⚠️  Nenhuma matrícula cadastrada no sistema.\n");
+    } else {
+        printf("\n  ✓ Total: %d matrícula(s) cadastrada(s)\n", contador);
+    }
+    printf("\n");
+}
+
+// Lista todas as matrículas de um aluno específico (histórico)
+void listar_matriculas_aluno(int matricula_aluno) {
+    Aluno *aluno = ler_aluno(matricula_aluno);
+    if (aluno == NULL) {
+        return; // Mensagem de erro já foi exibida por ler_aluno()
+    }
+    
+    printf("\n╔════════════════════════════════════════════════════════════════╗\n");
+    printf("║              MATRÍCULAS DO ALUNO                               ║\n");
+    printf("╠════════════════════════════════════════════════════════════════╣\n");
+    printf("║ Matrícula: %6d                                              ║\n", aluno->matricula);
+    printf("║ Nome: %-52s ║\n", aluno->nome_aluno);
+    printf("╚════════════════════════════════════════════════════════════════╝\n\n");
+    
+    if (fseek(matriculas_dat, 0, SEEK_END) != 0) {
+        perror("Erro ao buscar final do arquivo de matrículas");
+        free(aluno);
+        return;
+    }
+    
+    long tamanho = ftell(matriculas_dat);
+    fseek(matriculas_dat, 0, SEEK_SET);
+    
+    long offset = 0;
+    int contador = 0;
+    float soma_medias = 0.0;
+    Matricula matricula;
+    
+    printf("┌──────┬──────┬─────────┬────────────────────────────────────┬───────┐\n");
+    printf("│  Nº  │  ID  │ Cód.Dis │         Nome Disciplina            │ Média │\n");
+    printf("├──────┼──────┼─────────┼────────────────────────────────────┼───────┤\n");
+    
+    while (offset < tamanho) {
+        if (ler_registro(&matricula, sizeof(Matricula), offset, matriculas_dat)) {
+            if (matricula.ativo == 1 && matricula.matricula_aluno == matricula_aluno) {
+                Disciplina *disc = ler_disciplina(matricula.codigo_disciplina);
+                
+                printf("│ %4d │ %4d │  %5d  │ %-34s │ %5.2f │\n",
+                       ++contador,
+                       matricula.id_matricula,
+                       matricula.codigo_disciplina,
+                       disc ? disc->nome_disciplina : "N/A",
+                       matricula.media_final);
+                
+                soma_medias += matricula.media_final;
+                
+                if (disc) free(disc);
+            }
+        }
+        offset += sizeof(Matricula);
+    }
+    
+    printf("└──────┴──────┴─────────┴────────────────────────────────────┴───────┘\n");
+    
+    if (contador == 0) {
+        printf("\n  ⚠️  Este aluno não possui matrículas cadastradas.\n");
+    } else {
+        float media_geral = soma_medias / contador;
+        printf("\n┌─────────────────────────────────────────────────────────────────┐\n");
+        printf("│  Total de disciplinas: %2d                                       │\n", contador);
+        printf("│  Média geral: %.2f                                              │\n", media_geral);
+        
+        // Status acadêmico
+        if (media_geral >= 7.0) {
+            printf("│  Status: ✓ APROVADO                                            │\n");
+        } else if (media_geral >= 5.0) {
+            printf("│  Status: ⚠ RECUPERAÇÃO                                         │\n");
+        } else {
+            printf("│  Status: ✗ REPROVADO                                           │\n");
+        }
+        
+        printf("└─────────────────────────────────────────────────────────────────┘\n");
+    }
+    
+    printf("\n");
+    free(aluno);
+}
+
+// Lista todas as matrículas de uma disciplina específica
+void listar_matriculas_disciplina(int codigo_disciplina) {
+    Disciplina *disciplina = ler_disciplina(codigo_disciplina);
+    if (disciplina == NULL) {
+        return; // Mensagem de erro já foi exibida
+    }
+    
+    printf("\n╔════════════════════════════════════════════════════════════════╗\n");
+    printf("║            MATRÍCULAS DA DISCIPLINA                            ║\n");
+    printf("╠════════════════════════════════════════════════════════════════╣\n");
+    printf("║ Código: %5d                                                  ║\n", disciplina->codigo_disciplina);
+    printf("║ Nome: %-54s ║\n", disciplina->nome_disciplina);
+    printf("╚════════════════════════════════════════════════════════════════╝\n\n");
+    
+    if (fseek(matriculas_dat, 0, SEEK_END) != 0) {
+        perror("Erro ao buscar final do arquivo de matrículas");
+        free(disciplina);
+        return;
+    }
+    
+    long tamanho = ftell(matriculas_dat);
+    fseek(matriculas_dat, 0, SEEK_SET);
+    
+    long offset = 0;
+    int contador = 0;
+    float soma_medias = 0.0;
+    Matricula matricula;
+    
+    printf("┌──────┬──────┬─────────────┬────────────────────────────────────┬───────┐\n");
+    printf("│  Nº  │  ID  │  Matrícula  │          Nome do Aluno             │ Média │\n");
+    printf("├──────┼──────┼─────────────┼────────────────────────────────────┼───────┤\n");
+    
+    while (offset < tamanho) {
+        if (ler_registro(&matricula, sizeof(Matricula), offset, matriculas_dat)) {
+            if (matricula.ativo == 1 && matricula.codigo_disciplina == codigo_disciplina) {
+                Aluno *aluno = ler_aluno(matricula.matricula_aluno);
+                
+                printf("│ %4d │ %4d │    %6d   │ %-34s │ %5.2f │\n",
+                       ++contador,
+                       matricula.id_matricula,
+                       matricula.matricula_aluno,
+                       aluno ? aluno->nome_aluno : "N/A",
+                       matricula.media_final);
+                
+                soma_medias += matricula.media_final;
+                
+                if (aluno) free(aluno);
+            }
+        }
+        offset += sizeof(Matricula);
+    }
+    
+    printf("└──────┴──────┴─────────────┴────────────────────────────────────┴───────┘\n");
+    
+    if (contador == 0) {
+        printf("\n  ⚠️  Esta disciplina não possui alunos matriculados.\n");
+    } else {
+        float media_turma = soma_medias / contador;
+        int aprovados = 0;
+        int reprovados = 0;
+        
+        // Reprocessar para contar aprovados/reprovados
+        fseek(matriculas_dat, 0, SEEK_SET);
+        offset = 0;
+        while (offset < tamanho) {
+            if (ler_registro(&matricula, sizeof(Matricula), offset, matriculas_dat)) {
+                if (matricula.ativo == 1 && matricula.codigo_disciplina == codigo_disciplina) {
+                    if (matricula.media_final >= 7.0) {
+                        aprovados++;
+                    } else {
+                        reprovados++;
+                    }
+                }
+            }
+            offset += sizeof(Matricula);
+        }
+        
+        printf("\n┌─────────────────────────────────────────────────────────────────┐\n");
+        printf("│  Total de alunos: %2d                                            │\n", contador);
+        printf("│  Média da turma: %.2f                                           │\n", media_turma);
+        printf("│  Aprovados (≥7.0): %2d                                          │\n", aprovados);
+        printf("│  Reprovados (<7.0): %2d                                         │\n", reprovados);
+        printf("│  Taxa de aprovação: %.1f%%                                      │\n", 
+               (aprovados * 100.0) / contador);
+        printf("└─────────────────────────────────────────────────────────────────┘\n");
+    }
+    
+    printf("\n");
+    free(disciplina);
+}
+// ═══════════════════════════════════════════════════════════
+//                    MENUS INTERATIVOS
+// ═══════════════════════════════════════════════════════════
+
+// Função auxiliar para limpar buffer do teclado
+void limpar_buffer() {
+    int c;
+    while ((c = getchar()) != '\n' && c != EOF);
+}
+
+// Função auxiliar para pausar e aguardar usuário
+void pausar() {
+    printf("\nPressione ENTER para continuar...");
+    limpar_buffer();
+    getchar();
+}
+
+// ═══════════════════════════════════════════════════════════
+//                    MENU DE ALUNOS
+// ═══════════════════════════════════════════════════════════
+
+void menu_alunos() {
+    int opcao;
+    int matricula;
+    char nome[TAM_NOME_ALUNO];
+    
+    do {
+        printf("\n╔═══════════════════════════════════════╗\n");
+        printf("║        GERENCIAMENTO DE ALUNOS        ║\n");
+        printf("╠═══════════════════════════════════════╣\n");
+        printf("║  1. Cadastrar Aluno                   ║\n");
+        printf("║  2. Buscar Aluno                      ║\n");
+        printf("║  3. Atualizar Aluno                   ║\n");
+        printf("║  4. Remover Aluno                     ║\n");
+        printf("║  5. Listar Todos os Alunos            ║\n");
+        printf("║  6. Ver Histórico do Aluno            ║\n");
+        printf("║  0. Voltar ao Menu Principal          ║\n");
+        printf("╚═══════════════════════════════════════╝\n");
+        printf("Opção: ");
+        scanf("%d", &opcao);
+        limpar_buffer();
+        
+        switch(opcao) {
+            case 1: // Cadastrar
+                printf("\n═══ CADASTRAR NOVO ALUNO ═══\n");
+                printf("Matrícula: ");
+                scanf("%d", &matricula);
+                limpar_buffer();
+                printf("Nome: ");
+                fgets(nome, TAM_NOME_ALUNO, stdin);
+                nome[strcspn(nome, "\n")] = '\0'; // Remove \n do final
+                
+                criar_aluno(matricula, nome);
+                pausar();
+                break;
+                
+            case 2: // Buscar
+                printf("\n═══ BUSCAR ALUNO ═══\n");
+                printf("Matrícula: ");
+                scanf("%d", &matricula);
+                limpar_buffer();
+                
+                Aluno *aluno_busca = ler_aluno(matricula);
+                if (aluno_busca != NULL) {
+                    printf("\n┌─────────────────────────────────────────┐\n");
+                    printf("│ ALUNO ENCONTRADO                        │\n");
+                    printf("├─────────────────────────────────────────┤\n");
+                    printf("│ Matrícula: %-6d                       │\n", aluno_busca->matricula);
+                    printf("│ Nome: %-33s │\n", aluno_busca->nome_aluno);
+                    printf("└─────────────────────────────────────────┘\n");
+                    free(aluno_busca);
+                }
+                pausar();
+                break;
+                
+            case 3: // Atualizar
+                printf("\n═══ ATUALIZAR ALUNO ═══\n");
+                printf("Matrícula do aluno: ");
+                scanf("%d", &matricula);
+                limpar_buffer();
+                printf("Novo nome: ");
+                fgets(nome, TAM_NOME_ALUNO, stdin);
+                nome[strcspn(nome, "\n")] = '\0';
+                
+                atualizar_aluno(matricula, nome);
+                pausar();
+                break;
+                
+            case 4: // Remover
+                printf("\n═══ REMOVER ALUNO ═══\n");
+                printf("Matrícula do aluno: ");
+                scanf("%d", &matricula);
+                limpar_buffer();
+                
+                printf("\n⚠️  ATENÇÃO: Esta operação removerá o aluno e TODAS as suas matrículas!\n");
+                printf("Confirma a remoção? (S/N): ");
+                char confirma;
+                scanf("%c", &confirma);
+                limpar_buffer();
+                
+                if (confirma == 'S' || confirma == 's') {
+                    remover_aluno_fisico(matricula);
+                } else {
+                    printf("Operação cancelada.\n");
+                }
+                pausar();
+                break;
+                
+            case 5: // Listar todos
+                listar_todos_alunos();
+                pausar();
+                break;
+                
+            case 6: // Histórico
+                printf("\n═══ HISTÓRICO DO ALUNO ═══\n");
+                printf("Matrícula: ");
+                scanf("%d", &matricula);
+                limpar_buffer();
+                
+                listar_matriculas_aluno(matricula);
+                pausar();
+                break;
+                
+            case 0: // Voltar
+                printf("\nVoltando ao menu principal...\n");
+                break;
+                
+            default:
+                printf("\n❌ Opção inválida! Tente novamente.\n");
+                pausar();
+        }
+    } while(opcao != 0);
+}
+
+// ═══════════════════════════════════════════════════════════
+//                  MENU DE DISCIPLINAS
+// ═══════════════════════════════════════════════════════════
+
+void menu_disciplinas() {
+    int opcao;
+    int codigo;
+    char nome[TAM_NOME_DISCIPLINA];
+    
+    do {
+        printf("\n╔═══════════════════════════════════════╗\n");
+        printf("║      GERENCIAMENTO DE DISCIPLINAS     ║\n");
+        printf("╠═══════════════════════════════════════╣\n");
+        printf("║  1. Cadastrar Disciplina              ║\n");
+        printf("║  2. Buscar Disciplina                 ║\n");
+        printf("║  3. Atualizar Disciplina              ║\n");
+        printf("║  4. Remover Disciplina                ║\n");
+        printf("║  5. Listar Todas as Disciplinas       ║\n");
+        printf("║  6. Ver Alunos da Disciplina          ║\n");
+        printf("║  0. Voltar ao Menu Principal          ║\n");
+        printf("╚═══════════════════════════════════════╝\n");
+        printf("Opção: ");
+        scanf("%d", &opcao);
+        limpar_buffer();
+        
+        switch(opcao) {
+            case 1: // Cadastrar
+                printf("\n═══ CADASTRAR NOVA DISCIPLINA ═══\n");
+                printf("Código: ");
+                scanf("%d", &codigo);
+                limpar_buffer();
+                printf("Nome: ");
+                fgets(nome, TAM_NOME_DISCIPLINA, stdin);
+                nome[strcspn(nome, "\n")] = '\0';
+                
+                criar_disciplina(codigo, nome);
+                pausar();
+                break;
+                
+            case 2: // Buscar
+                printf("\n═══ BUSCAR DISCIPLINA ═══\n");
+                printf("Código: ");
+                scanf("%d", &codigo);
+                limpar_buffer();
+                
+                Disciplina *disc_busca = ler_disciplina(codigo);
+                if (disc_busca != NULL) {
+                    printf("\n┌─────────────────────────────────────────┐\n");
+                    printf("│ DISCIPLINA ENCONTRADA                   │\n");
+                    printf("├─────────────────────────────────────────┤\n");
+                    printf("│ Código: %-5d                          │\n", disc_busca->codigo_disciplina);
+                    printf("│ Nome: %-33s │\n", disc_busca->nome_disciplina);
+                    printf("└─────────────────────────────────────────┘\n");
+                    free(disc_busca);
+                }
+                pausar();
+                break;
+                
+            case 3: // Atualizar
+                printf("\n═══ ATUALIZAR DISCIPLINA ═══\n");
+                printf("Código da disciplina: ");
+                scanf("%d", &codigo);
+                limpar_buffer();
+                printf("Novo nome: ");
+                fgets(nome, TAM_NOME_DISCIPLINA, stdin);
+                nome[strcspn(nome, "\n")] = '\0';
+                
+                atualizar_disciplina(codigo, nome);
+                pausar();
+                break;
+                
+            case 4: // Remover
+                printf("\n═══ REMOVER DISCIPLINA ═══\n");
+                printf("Código da disciplina: ");
+                scanf("%d", &codigo);
+                limpar_buffer();
+                
+                printf("\n⚠️  ATENÇÃO: Esta operação removerá a disciplina e TODAS as matrículas nela!\n");
+                printf("Confirma a remoção? (S/N): ");
+                char confirma;
+                scanf("%c", &confirma);
+                limpar_buffer();
+                
+                if (confirma == 'S' || confirma == 's') {
+                    remover_disciplina_fisica(codigo);
+                } else {
+                    printf("Operação cancelada.\n");
+                }
+                pausar();
+                break;
+                
+            case 5: // Listar todas
+                listar_todas_disciplinas();
+                pausar();
+                break;
+                
+            case 6: // Ver alunos
+                printf("\n═══ ALUNOS DA DISCIPLINA ═══\n");
+                printf("Código: ");
+                scanf("%d", &codigo);
+                limpar_buffer();
+                
+                listar_matriculas_disciplina(codigo);
+                pausar();
+                break;
+                
+            case 0: // Voltar
+                printf("\nVoltando ao menu principal...\n");
+                break;
+                
+            default:
+                printf("\n❌ Opção inválida! Tente novamente.\n");
+                pausar();
+        }
+    } while(opcao != 0);
+}
+
+// ═══════════════════════════════════════════════════════════
+//                  MENU DE MATRÍCULAS
+// ═══════════════════════════════════════════════════════════
+
+void menu_matriculas() {
+    int opcao;
+    int id_matricula, matricula_aluno, codigo_disciplina;
+    float media;
+    
+    do {
+        printf("\n╔═══════════════════════════════════════╗\n");
+        printf("║      GERENCIAMENTO DE MATRÍCULAS      ║\n");
+        printf("╠═══════════════════════════════════════╣\n");
+        printf("║  1. Realizar Matrícula                ║\n");
+        printf("║  2. Buscar Matrícula                  ║\n");
+        printf("║  3. Lançar/Atualizar Média            ║\n");
+        printf("║  4. Remover Matrícula                 ║\n");
+        printf("║  5. Listar Todas as Matrículas        ║\n");
+        printf("║  0. Voltar ao Menu Principal          ║\n");
+        printf("╚═══════════════════════════════════════╝\n");
+        printf("Opção: ");
+        scanf("%d", &opcao);
+        limpar_buffer();
+        
+        switch(opcao) {
+            case 1: // Realizar matrícula
+                printf("\n═══ REALIZAR MATRÍCULA ═══\n");
+                printf("Matrícula do aluno: ");
+                scanf("%d", &matricula_aluno);
+                printf("Código da disciplina: ");
+                scanf("%d", &codigo_disciplina);
+                printf("Média inicial (0 se ainda não tiver): ");
+                scanf("%f", &media);
+                limpar_buffer();
+                
+                criar_matricula(matricula_aluno, codigo_disciplina, media);
+                pausar();
+                break;
+                
+            case 2: // Buscar
+                printf("\n═══ BUSCAR MATRÍCULA ═══\n");
+                printf("ID da matrícula: ");
+                scanf("%d", &id_matricula);
+                limpar_buffer();
+                
+                Matricula *mat_busca = ler_matricula(id_matricula);
+                if (mat_busca != NULL) {
+                    Aluno *aluno_mat = ler_aluno(mat_busca->matricula_aluno);
+                    Disciplina *disc_mat = ler_disciplina(mat_busca->codigo_disciplina);
+                    
+                    printf("\n┌─────────────────────────────────────────────────────┐\n");
+                    printf("│ MATRÍCULA ENCONTRADA                                │\n");
+                    printf("├─────────────────────────────────────────────────────┤\n");
+                    printf("│ ID: %-4d                                           │\n", mat_busca->id_matricula);
+                    printf("│ Aluno: %-6d - %-35s │\n", 
+                           mat_busca->matricula_aluno,
+                           aluno_mat ? aluno_mat->nome_aluno : "N/A");
+                    printf("│ Disciplina: %-5d - %-32s │\n",
+                           mat_busca->codigo_disciplina,
+                           disc_mat ? disc_mat->nome_disciplina : "N/A");
+                    printf("│ Média Final: %-5.2f                                │\n", mat_busca->media_final);
+                    printf("└─────────────────────────────────────────────────────┘\n");
+                    
+                    free(mat_busca);
+                    if (aluno_mat) free(aluno_mat);
+                    if (disc_mat) free(disc_mat);
+                }
+                pausar();
+                break;
+                
+            case 3: // Atualizar média
+                printf("\n═══ LANÇAR/ATUALIZAR MÉDIA ═══\n");
+                printf("ID da matrícula: ");
+                scanf("%d", &id_matricula);
+                printf("Nova média: ");
+                scanf("%f", &media);
+                limpar_buffer();
+                
+                atualizar_media_matricula(id_matricula, media);
+                pausar();
+                break;
+                
+            case 4: // Remover
+                printf("\n═══ REMOVER MATRÍCULA ═══\n");
+                printf("ID da matrícula: ");
+                scanf("%d", &id_matricula);
+                limpar_buffer();
+                
+                printf("\nConfirma a remoção da matrícula %d? (S/N): ", id_matricula);
+                char confirma;
+                scanf("%c", &confirma);
+                limpar_buffer();
+                
+                if (confirma == 'S' || confirma == 's') {
+                    remover_matricula_fisica(id_matricula);
+                } else {
+                    printf("Operação cancelada.\n");
+                }
+                pausar();
+                break;
+                
+            case 5: // Listar todas
+                listar_todas_matriculas();
+                pausar();
+                break;
+                
+            case 0: // Voltar
+                printf("\nVoltando ao menu principal...\n");
+                break;
+                
+            default:
+                printf("\n❌ Opção inválida! Tente novamente.\n");
+                pausar();
+        }
+    } while(opcao != 0);
+}
+
+// ═══════════════════════════════════════════════════════════
+//                    MENU DE RELATÓRIOS
+// ═══════════════════════════════════════════════════════════
+
+void menu_relatorios() {
+    int opcao;
+    int matricula, codigo;
+    
+    do {
+        printf("\n╔═══════════════════════════════════════╗\n");
+        printf("║             RELATÓRIOS                ║\n");
+        printf("╠═══════════════════════════════════════╣\n");
+        printf("║  1. Listar Todos os Alunos            ║\n");
+        printf("║  2. Listar Todas as Disciplinas       ║\n");
+        printf("║  3. Listar Todas as Matrículas        ║\n");
+        printf("║  4. Histórico de um Aluno             ║\n");
+        printf("║  5. Alunos de uma Disciplina          ║\n");
+        printf("║  0. Voltar ao Menu Principal          ║\n");
+        printf("╚═══════════════════════════════════════╝\n");
+        printf("Opção: ");
+        scanf("%d", &opcao);
+        limpar_buffer();
+        
+        switch(opcao) {
+            case 1: // Listar alunos
+                listar_todos_alunos();
+                pausar();
+                break;
+                
+            case 2: // Listar disciplinas
+                listar_todas_disciplinas();
+                pausar();
+                break;
+                
+            case 3: // Listar matrículas
+                listar_todas_matriculas();
+                pausar();
+                break;
+                
+            case 4: // Histórico do aluno
+                printf("\n═══ HISTÓRICO DO ALUNO ═══\n");
+                printf("Matrícula do aluno: ");
+                scanf("%d", &matricula);
+                limpar_buffer();
+                
+                listar_matriculas_aluno(matricula);
+                pausar();
+                break;
+                
+            case 5: // Alunos da disciplina
+                printf("\n═══ ALUNOS DA DISCIPLINA ═══\n");
+                printf("Código da disciplina: ");
+                scanf("%d", &codigo);
+                limpar_buffer();
+                
+                listar_matriculas_disciplina(codigo);
+                pausar();
+                break;
+                
+            case 0: // Voltar
+                printf("\nVoltando ao menu principal...\n");
+                break;
+                
+            default:
+                printf("\n❌ Opção inválida! Tente novamente.\n");
+                pausar();
+        }
+    } while(opcao != 0);
+}
+
+// ═══════════════════════════════════════════════════════════
+//                    MENU PRINCIPAL
+// ═══════════════════════════════════════════════════════════
+
+void menu_principal() {
+    int opcao;
+    
+    do { 
+        printf("\n╔═══════════════════════════════════════╗\n");
+        printf("║   SISTEMA DE GERENCIAMENTO ACADÊMICO  ║\n");
+        printf("╠═══════════════════════════════════════╣\n");
+        printf("║  1. Gerenciar Alunos                  ║\n");
+        printf("║  2. Gerenciar Disciplinas             ║\n");
+        printf("║  3. Gerenciar Matrículas              ║\n");
+        printf("║  4. Relatórios                        ║\n");
+        printf("║  0. Sair                              ║\n");
+        printf("╚═══════════════════════════════════════╝\n");
+        printf("Opção: ");
+        scanf("%d", &opcao);
+        limpar_buffer();
+        
+        switch(opcao) {
+            case 1: 
+                menu_alunos(); 
+                break;
+            case 2: 
+                menu_disciplinas(); 
+                break;
+            case 3: 
+                menu_matriculas(); 
+                break;
+            case 4: 
+                menu_relatorios(); 
+                break;
+            case 0: 
+                printf("\n╔═══════════════════════════════════════╗\n");
+                printf("║  Sistema encerrado com sucesso!       ║\n");
+                printf("║  Até logo! 👋                         ║\n");
+                printf("╚═══════════════════════════════════════╝\n\n");
+                break;
+            default: 
+                printf("\n❌ Opção inválida! Tente novamente.\n");
+                pausar();
+        }
+    } while(opcao != 0);
+}
+int main() {
+    
+    printf("\n");
+    printf("╔═══════════════════════════════════════════════════════════╗\n");
+    printf("║                                                           ║\n");
+    printf("║     🎓  SISTEMA DE GERENCIAMENTO ACADÊMICO  🎓           ║\n");
+    printf("║                                                           ║\n");
+    printf("║          Universidade Federal de Pelotas                 ║\n");
+    printf("║              Estruturas de Dados II                      ║\n");
+    printf("║                                                           ║\n");
+    printf("╚═══════════════════════════════════════════════════════════╝\n");
+    printf("\n  Inicializando sistema...\n");
+    
+    // Inicializar arquivos
+    inicializar_arquivos();
+    
+    printf("  ✓ Sistema pronto para uso!\n");
+    
+    // Executar menu principal
+    menu_principal();
+    
+    // Fechar arquivos ao sair
+    fechar_arquivos();
+    
+    return 0;
+}

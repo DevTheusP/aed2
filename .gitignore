@@ -1,1 +1,11 @@
-/.vscode
+# Executável
+sga
+
+# Arquivos de dados
+*.dat
+
+# Arquivos de índice
+*.idx
+
+# VSCode
+.vscode/
