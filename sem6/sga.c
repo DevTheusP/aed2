@@ -16,6 +16,11 @@ typedef struct Aluno{
 
 } Aluno;
 
+typedef struct ChaveOffset{
+    int chave;
+    long offset_dado;
+} ChaveOffset;
+
 typedef struct Disciplina{
 
     int codigo_disciplina;
@@ -778,9 +783,8 @@ void fundir_filho(FILE *arquivo_idx, BtreeNode *no_pai, int indice_filho);
 // função para garantir que o as t-1 chaves
 void preencher_filho(FILE *arquivo_idx, BtreeNode *no_pai, int indice_filho) {
     
-    // Tenta redistribuir do irmão da esquerda, se ele existir e tiver mais que T-1 chaves
+    // Tenta redistribuir da esquerda
     if (indice_filho != 0 && no_pai->offsets_filhos[indice_filho - 1] != 0) {
-        
         BtreeNode irmao_esq;
         ler_no_idx(&irmao_esq, no_pai->offsets_filhos[indice_filho - 1], arquivo_idx);
 
@@ -790,10 +794,8 @@ void preencher_filho(FILE *arquivo_idx, BtreeNode *no_pai, int indice_filho) {
         }
     }
 
-    // Tenta redistribuir do irmão da direita, se ele existir e tiver mais que T-1 chaves
-    
+    // Tenta redistribuir da direita
     if (indice_filho != no_pai->num_chaves && no_pai->offsets_filhos[indice_filho + 1] != 0) {
-        
         BtreeNode irmao_dir;
         ler_no_idx(&irmao_dir, no_pai->offsets_filhos[indice_filho + 1], arquivo_idx);
 
@@ -803,56 +805,53 @@ void preencher_filho(FILE *arquivo_idx, BtreeNode *no_pai, int indice_filho) {
         }
     }
 
-    // se chegou aqui os irmãos estão no limite
+    // Funde com irmão
     if (indice_filho != no_pai->num_chaves) {
-        // Funde o filho [i] com o irmão da direita [i+1]
         fundir_filho(arquivo_idx, no_pai, indice_filho);
     } else {
-        // Funde o filho [i] (que é o último) com o irmão da esquerda [i-1]
         fundir_filho(arquivo_idx, no_pai, indice_filho - 1);
     }
 }
 // Retorna a menor chave no nó da folha da subárvore do 'no' (o sucessor).
-int obter_sucessor(FILE *arquivo_idx, long offset_no) {
+ChaveOffset obter_sucessor_com_offset(FILE *arquivo_idx, long offset_no) {
     BtreeNode no;
     ler_no_idx(&no, offset_no, arquivo_idx);
 
-    // Navega sempre para o filho mais à esquerda até chegar na folha
     while (!no.eh_folha) {
         offset_no = no.offsets_filhos[0];
         ler_no_idx(&no, offset_no, arquivo_idx);
     }
 
-    // A menor chave é a primeira no nó folha
-    return no.chaves[0];
+    ChaveOffset resultado;
+    resultado.chave = no.chaves[0];
+    resultado.offset_dado = no.offsets_dados[0];
+    return resultado;
 }
 // Retorna a maior chave no nó da folha da subárvore do 'no' (o antecessor).
-int obter_antecessor(FILE *arquivo_idx, long offset_no) {
+ChaveOffset obter_antecessor_com_offset(FILE *arquivo_idx, long offset_no) {
     BtreeNode no;
     ler_no_idx(&no, offset_no, arquivo_idx);
 
-    // Navega sempre para o filho mais à direita até chegar na folha
     while (!no.eh_folha) {
         offset_no = no.offsets_filhos[no.num_chaves];
         ler_no_idx(&no, offset_no, arquivo_idx);
     }
 
-    // A maior chave é a última no nó folha
-    return no.chaves[no.num_chaves - 1];
+    ChaveOffset resultado;
+    resultado.chave = no.chaves[no.num_chaves - 1];
+    resultado.offset_dado = no.offsets_dados[no.num_chaves - 1];
+    return resultado;
 }
 void remover_recursivo(FILE *arquivo_idx, BtreeNode *no, int chave) {
     int i = 0;
-    // acha por onde descer
     while (i < no->num_chaves && chave > no->chaves[i]) {
         i++;
     }
 
-    // caso 1 e 2, a chave está aqui no indice i
     if (i < no->num_chaves && chave == no->chaves[i]) {
         
         if (no->eh_folha) {
-            // Caso 1: Nó Folha - Remover e deslocar o resto para a esquerda
-            // Remove a chave e o offset_dado
+            // Caso 1: Nó Folha
             for (int j = i + 1; j < no->num_chaves; j++) {
                 no->chaves[j - 1] = no->chaves[j];
                 no->offsets_dados[j - 1] = no->offsets_dados[j];
@@ -862,83 +861,64 @@ void remover_recursivo(FILE *arquivo_idx, BtreeNode *no, int chave) {
             return;
             
         } else {
-            // Caso 2: Nó Interno - Substituir e descer
-            // Tenta usar o Antecessor (filho da esquerda)
+            // Caso 2: Nó Interno 
             BtreeNode filho_esq;
             ler_no_idx(&filho_esq, no->offsets_filhos[i], arquivo_idx);
             
             if (filho_esq.num_chaves >= T) {
-                // Se o filho da esquerda tem chaves suficientes, pegue o antecessor (a maior chave)
-                int antecessor = obter_antecessor(arquivo_idx, no->offsets_filhos[i]);
-                // Substitui a chave a ser removida (chaves[i]) pelo antecessor
-                no->chaves[i] = antecessor;
-                
-                // nao atualiza o offset de dados agora
+                // Antecessor com offset
+                ChaveOffset ant = obter_antecessor_com_offset(arquivo_idx, no->offsets_filhos[i]);
+                no->chaves[i] = ant.chave;
+                no->offsets_dados[i] = ant.offset_dado; 
                 escrever_no_idx(no, arquivo_idx);
-
-                //agora remove recursivo o nó que foi promovido da folha
-                remover_recursivo(arquivo_idx, &filho_esq, antecessor);
+                remover_recursivo(arquivo_idx, &filho_esq, ant.chave);
                 return;
                 
             } else {
-                // Tenta usar o Sucessor (filho da direita)
                 BtreeNode filho_dir;
                 ler_no_idx(&filho_dir, no->offsets_filhos[i+1], arquivo_idx);
                 
                 if (filho_dir.num_chaves >= T) {
-                    // Se o filho da direita tem chaves suficientes, pegue o sucessor (a menor chave)
-                    int sucessor = obter_sucessor(arquivo_idx, no->offsets_filhos[i+1]);
-                    no->chaves[i] = sucessor;
+                    // sucessor com offset
+                    ChaveOffset suc = obter_sucessor_com_offset(arquivo_idx, no->offsets_filhos[i+1]);
+                    no->chaves[i] = suc.chave;
+                    no->offsets_dados[i] = suc.offset_dado; // atualiza o offset
                     escrever_no_idx(no, arquivo_idx);
-                    remover_recursivo(arquivo_idx, &filho_dir, sucessor);
+                    remover_recursivo(arquivo_idx, &filho_dir, suc.chave);
                     return;
 
                 } else {
-                    // Os dois filhos (antecessor e sucessor) estão no limite (T-1 chaves)
-                    // Fundir o filho da esquerda [i] com o da direita [i+1]
                     fundir_filho(arquivo_idx, no, i); 
-                    
-                    // O nó fundido agora contém a chave k pra remover
-                    // chama a função no nó esquerdo
+                    // recarrega filhos apos a fusao
+                    ler_no_idx(&filho_esq, no->offsets_filhos[i], arquivo_idx);
                     remover_recursivo(arquivo_idx, &filho_esq, chave); 
                     return;
                 }
             }
         }
     } 
-    
-    // a chave não ta nesse nó vai pra ca
     else {
-        // Encontramos o filho para onde descer (o índice 'i' já aponta para o filho correto)
+        // Caso 3: Descer para filho
         long offset_filho = no->offsets_filhos[i];
-        
         BtreeNode filho;
         ler_no_idx(&filho, offset_filho, arquivo_idx);
         
-        // se o filho tem apenas t-1 preenche ou funde
         if (filho.num_chaves == T - 1) {
             preencher_filho(arquivo_idx, no, i);
             
-            // O nó pai (no) e possivelmente os filhos mudaram após o preenchimento/fusão.
-            // recarrega o nó pai, ele pode ter perdido ou ganhado chaves.
-            // E recalcula o filho correto para descer, pois o pai mudou.
-            
-            // Recarrega o nó pai (pois o preenchimento/fusão o modificou)
-            if (!ler_no_idx(no, no->meu_offset, arquivo_idx)) {
-                fprintf(stderr, "Erro ao recarregar o nó pai após preenchimento.\n");
-                return;
-            }
+            // recarrega o pai apos o preenchimento
+            ler_no_idx(no, no->meu_offset, arquivo_idx);
 
-            // Recalcula o índice 'i' para descer (pois o pai pode ter recebido/perdido chaves)
+            // Recalcula índice
             i = 0;
             while (i < no->num_chaves && chave > no->chaves[i]) {
                 i++;
             }
-            // Recarrega o filho correto para descer
+            
+            // recarrega o filho pos preenchimento
             ler_no_idx(&filho, no->offsets_filhos[i], arquivo_idx); 
         }
 
-        // Agora, o filho tem pelo menos T chaves (ou é um nó fundido que dá pra deletar).
         remover_recursivo(arquivo_idx, &filho, chave);
     }
 }
