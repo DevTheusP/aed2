@@ -518,51 +518,47 @@ void criar_disciplina(int codigo, char *nome) {
 }
 
 void inserir_na_arvore_b(FILE *arquivo_idx, int chave, long offset_dado) {
-    // Ler o cabeçalho para achar a raiz
     BTreeHeader header;
     ler_cabecalho_idx(&header, arquivo_idx);
-    //ler o nó raiz
     BtreeNode raiz;
     if(!ler_no_idx(&raiz, header.offset_raiz, arquivo_idx)) {
         fprintf(stderr, "Erro fatal: Não foi possível ler o nó raiz.\n");
         return;
     }
 
-    // verifica se a raiz ta cheia T= 3 -> MAX CHAVES = 5)
     if(raiz.num_chaves == MAX_CHAVES){
-        // raiz ta cheia
-        //precisa criar uma raiz nova e dividir a antiga
-
+        // raiz ta cheia tenque dividir
+        
+        // aloca o espaço pra nova
         long offset_nova_raiz = obter_proximo_offset_livre(arquivo_idx);
         BtreeNode nova_raiz;
+        memset(&nova_raiz, 0, sizeof(BtreeNode));
+
         nova_raiz.meu_offset = offset_nova_raiz;
-        nova_raiz.eh_folha = 0; // nova raiz nunca é uma folha
-        nova_raiz.num_chaves = 0; // starta vazia
-
-        // a raiz antiga vira o primeiro e unico filho da nova raiz
+        nova_raiz.eh_folha = 0;
+        nova_raiz.num_chaves = 0;
         nova_raiz.offsets_filhos[0] = header.offset_raiz;
+        
+        // ja escreve pra calcular certo depois
+        escrever_no_idx(&nova_raiz, arquivo_idx);
+        
+        // agora divide
+        // como nova_raiz já foi escrita, obter_proximo_offset_livre() 
+        // vai retornar um offset diferente
+        dividir_filho(arquivo_idx, &nova_raiz, 0, &raiz);
 
-        //dividir a raiz antiga
-        //funcao dividir filho vai 'promover' a chave do meio da raiz antiga para nova raiz
-        dividir_filho(arquivo_idx, &nova_raiz, 0 , &raiz);
-
-        //finalmente ta pronto
-        // dale inserir
-        // a chave nao vai pra nova mas pra um dos filhos dela
+        // insere a nova chave
         inserir_nao_cheio(arquivo_idx, &nova_raiz, chave, offset_dado);
 
-        // atualiza o cabecalho no disco pra aponta pra nova raiz
+        // atualiza os cabeçalhos
         header.offset_raiz = offset_nova_raiz;
         escrever_cabecalho_idx(&header, arquivo_idx);
-        //atualiza a nova raiz no disco
+        
+        // escreve a nova raiz 
         escrever_no_idx(&nova_raiz, arquivo_idx);
 
-
-    }else{
-        // a raiz nao ta cheia
-        // so dale
+    } else {
         inserir_nao_cheio(arquivo_idx, &raiz, chave, offset_dado);
-        
     }
 }
 
@@ -667,45 +663,56 @@ void criar_matricula(int matricula_aluno, int codigo_disciplina, float media_fin
 }
 
 void dividir_filho(FILE *arquivo_idx, BtreeNode *no_pai, int indice_filho, BtreeNode *filho_cheio) {
+    // cria o irmao e aloca, tava dando b.o antes
     long offset_novo_irmao = obter_proximo_offset_livre(arquivo_idx);
     BtreeNode novo_irmao;
+    memset(&novo_irmao, 0, sizeof(BtreeNode));
+    
     novo_irmao.meu_offset = offset_novo_irmao;
     novo_irmao.eh_folha = filho_cheio->eh_folha;
     novo_irmao.num_chaves = T - 1;
 
+    // copia as chaves
     for(int j = 0; j < T - 1; j++){
         novo_irmao.chaves[j] = filho_cheio->chaves[j + T];
         novo_irmao.offsets_dados[j] = filho_cheio->offsets_dados[j + T];
     }
 
+    // copia os filhos se nao for folha
     if(!filho_cheio->eh_folha){
-        for(int  j = 0; j < T; j++){
+        for(int j = 0; j < T; j++){
             novo_irmao.offsets_filhos[j] = filho_cheio->offsets_filhos[j + T];
         }
     }
-    filho_cheio->num_chaves = T -1;
+    
+    // ja escreve o novo irmao, tava dando b.o tambem
+    escrever_no_idx(&novo_irmao, arquivo_idx);
+    
+    // arruma o filho
+    filho_cheio->num_chaves = T - 1;
 
-    for(int j = no_pai->num_chaves  -1; j > indice_filho - 1; j--){
-        no_pai->chaves[j+1] = no_pai->chaves[j];
-        no_pai->offsets_filhos[j+ 1] = no_pai->offsets_filhos[j];
+    // move os ponteiro
+    for (int j = no_pai->num_chaves; j > indice_filho; j--) {
+        no_pai->offsets_filhos[j + 1] = no_pai->offsets_filhos[j];
     }
-    // (Mover chaves)
-    for (int j = no_pai->num_chaves - 1; j > indice_filho - 1; j--) {
+    
+    // move as chaves
+    for (int j = no_pai->num_chaves - 1; j >= indice_filho; j--) {
         no_pai->chaves[j + 1] = no_pai->chaves[j];
         no_pai->offsets_dados[j + 1] = no_pai->offsets_dados[j];
     }
-    // sobe a chave do meio do filho pro pai
-    no_pai->chaves[indice_filho] = filho_cheio->chaves[T - 1]; // Chave do meio (índice 2)
+    
+    // sobe a chave do meio
+    no_pai->chaves[indice_filho] = filho_cheio->chaves[T - 1];
     no_pai->offsets_dados[indice_filho] = filho_cheio->offsets_dados[T - 1];
     
-    // aponta o no pai pro novo irmao
-    no_pai->offsets_filhos[indice_filho + 1] = novo_irmao.meu_offset;
+    // aponta pro novo irmao
+    no_pai->offsets_filhos[indice_filho + 1] = offset_novo_irmao;
     no_pai->num_chaves++;
 
-    // salva no disco
-    escrever_no_idx(no_pai, arquivo_idx);
+    // salva o que faltou no disco
     escrever_no_idx(filho_cheio, arquivo_idx);
-    escrever_no_idx(&novo_irmao, arquivo_idx);
+    escrever_no_idx(no_pai, arquivo_idx);
 }
 
 void inserir_nao_cheio(FILE *arquivo_idx, BtreeNode *no, int chave, long offset_dado){
@@ -1749,6 +1756,73 @@ void pausar() {
     limpar_buffer();
     getchar();
 }
+// Debug pq tava foda
+void debug_completo_arvore() {
+    printf("\n╔═══════════════════════════════════════════════════════════════╗\n");
+    printf("║              DEBUG COMPLETO DA ÁRVORE                         ║\n");
+    printf("╚═══════════════════════════════════════════════════════════════╝\n\n");
+    
+    BTreeHeader header;
+    ler_cabecalho_idx(&header, alunos_idx);
+    
+    printf("=== CABEÇALHO ===\n");
+    printf("offset_raiz: %ld\n", header.offset_raiz);
+    printf("proximo_id: %d\n\n", header.proximo_id);
+    
+    printf("=== NÓ RAIZ (offset %ld) ===\n", header.offset_raiz);
+    BtreeNode raiz;
+    ler_no_idx(&raiz, header.offset_raiz, alunos_idx);
+    
+    printf("meu_offset: %ld\n", raiz.meu_offset);
+    printf("eh_folha: %d\n", raiz.eh_folha);
+    printf("num_chaves: %d\n\n", raiz.num_chaves);
+    
+    printf("CHAVES:\n");
+    for (int i = 0; i < raiz.num_chaves; i++) {
+        printf("  chaves[%d] = %d (offset_dados: %ld)\n", 
+               i, raiz.chaves[i], raiz.offsets_dados[i]);
+    }
+    
+    printf("\nOFFSETS_FILHOS (deve ter %d+1 = %d filhos):\n", raiz.num_chaves, raiz.num_chaves + 1);
+    for (int i = 0; i <= MAX_FILHOS - 1; i++) {
+        printf("  offsets_filhos[%d] = %ld", i, raiz.offsets_filhos[i]);
+        if (i <= raiz.num_chaves) {
+            if (raiz.offsets_filhos[i] == raiz.meu_offset) {
+                printf(" ❌ LOOP! Aponta para si mesmo!");
+            } else if (raiz.offsets_filhos[i] > 0) {
+                printf(" ✓ Válido");
+            } else {
+                printf(" (vazio)");
+            }
+        } else {
+            printf(" (não usado)");
+        }
+        printf("\n");
+    }
+    
+    // Se não é folha, examinar os filhos
+    if (!raiz.eh_folha) {
+        printf("\n=== EXAMINANDO FILHOS ===\n");
+        for (int i = 0; i <= raiz.num_chaves; i++) {
+            if (raiz.offsets_filhos[i] > 0 && raiz.offsets_filhos[i] != raiz.meu_offset) {
+                printf("\n--- Filho %d (offset %ld) ---\n", i, raiz.offsets_filhos[i]);
+                BtreeNode filho;
+                if (ler_no_idx(&filho, raiz.offsets_filhos[i], alunos_idx)) {
+                    printf("meu_offset: %ld\n", filho.meu_offset);
+                    printf("eh_folha: %d\n", filho.eh_folha);
+                    printf("num_chaves: %d\n", filho.num_chaves);
+                    printf("chaves: ");
+                    for (int j = 0; j < filho.num_chaves; j++) {
+                        printf("%d ", filho.chaves[j]);
+                    }
+                    printf("\n");
+                }
+            }
+        }
+    }
+    
+    printf("\n");
+}
 
 // ═══════════════════════════════════════════════════════════
 //                    MENU DE ALUNOS
@@ -2100,7 +2174,6 @@ void menu_matriculas() {
         }
     } while(opcao != 0);
 }
-
 // ═══════════════════════════════════════════════════════════
 //                    MENU DE RELATÓRIOS
 // ═══════════════════════════════════════════════════════════
