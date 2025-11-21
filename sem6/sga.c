@@ -654,6 +654,8 @@ void criar_matricula(int matricula_aluno, int codigo_disciplina, float media_fin
     if (offset_dado == -1) {
         fprintf(stderr, "Erro: Falha ao salvar nova matrícula no .dat\n");
         return;
+
+                
     }
 
     // insere a chave e o offset no .idx
@@ -1392,13 +1394,6 @@ int remover_disciplina_fisica(int codigo) {
     return 1;
 }
 
-
-
-
-
-
-
-// I.A que fez essas de listagem
 void listar_todos_alunos() {
     printf("\n╔════════════════════════════════════════════════════════════╗\n");
     printf("║                    LISTA DE ALUNOS                         ║\n");
@@ -1734,9 +1729,8 @@ void limpar_buffer() {
 void pausar() {
     printf("\nPressione ENTER para continuar...");
     limpar_buffer();
-    getchar();
 }
-// Debug pq tava foda
+/* Debug pq tava foda
 void debug_completo_arvore() {
     printf("\n╔═══════════════════════════════════════════════════════════════╗\n");
     printf("║              DEBUG COMPLETO DA ÁRVORE                         ║\n");
@@ -1803,7 +1797,7 @@ void debug_completo_arvore() {
     
     printf("\n");
 }
-
+*/
 // ═══════════════════════════════════════════════════════════
 //                    MENU DE ALUNOS
 // ═══════════════════════════════════════════════════════════
@@ -1823,7 +1817,7 @@ void menu_alunos() {
         printf("║  4. Remover Aluno                     ║\n");
         printf("║  5. Listar Todos os Alunos            ║\n");
         printf("║  6. Ver Histórico do Aluno            ║\n");
-        printf("║  0. Voltar ao Menu Principal          ║\n");
+        printf("║  10. Voltar ao Menu Principal         ║\n");
         printf("╚═══════════════════════════════════════╝\n");
         printf("Opção: ");
         scanf("%d", &opcao);
@@ -1910,7 +1904,7 @@ void menu_alunos() {
                 pausar();
                 break;
                 
-            case 0: // Voltar
+            case 10: // Voltar
                 printf("\nVoltando ao menu principal...\n");
                 break;
                 
@@ -1918,7 +1912,7 @@ void menu_alunos() {
                 printf("\n❌ Opção inválida! Tente novamente.\n");
                 pausar();
         }
-    } while(opcao != 0);
+    } while(opcao != 10);
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -1940,7 +1934,7 @@ void menu_disciplinas() {
         printf("║  4. Remover Disciplina                ║\n");
         printf("║  5. Listar Todas as Disciplinas       ║\n");
         printf("║  6. Ver Alunos da Disciplina          ║\n");
-        printf("║  0. Voltar ao Menu Principal          ║\n");
+        printf("║  10. Voltar ao Menu Principal         ║\n");
         printf("╚═══════════════════════════════════════╝\n");
         printf("Opção: ");
         scanf("%d", &opcao);
@@ -2027,7 +2021,7 @@ void menu_disciplinas() {
                 pausar();
                 break;
                 
-            case 0: // Voltar
+            case 10: // Voltar
                 printf("\nVoltando ao menu principal...\n");
                 break;
                 
@@ -2035,7 +2029,7 @@ void menu_disciplinas() {
                 printf("\n❌ Opção inválida! Tente novamente.\n");
                 pausar();
         }
-    } while(opcao != 0);
+    } while(opcao != 10);
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -2056,7 +2050,7 @@ void menu_matriculas() {
         printf("║  3. Lançar/Atualizar Média            ║\n");
         printf("║  4. Remover Matrícula                 ║\n");
         printf("║  5. Listar Todas as Matrículas        ║\n");
-        printf("║  0. Voltar ao Menu Principal          ║\n");
+        printf("║  10. Voltar ao Menu Principal         ║\n");
         printf("╚═══════════════════════════════════════╝\n");
         printf("Opção: ");
         scanf("%d", &opcao);
@@ -2144,7 +2138,7 @@ void menu_matriculas() {
                 pausar();
                 break;
                 
-            case 0: // Voltar
+            case 10: // Voltar
                 printf("\nVoltando ao menu principal...\n");
                 break;
                 
@@ -2152,7 +2146,7 @@ void menu_matriculas() {
                 printf("\n❌ Opção inválida! Tente novamente.\n");
                 pausar();
         }
-    } while(opcao != 0);
+    } while(opcao != 10);
 }
 // ═══════════════════════════════════════════════════════════
 //                    MENU DE RELATÓRIOS
@@ -2171,7 +2165,7 @@ void menu_relatorios() {
         printf("║  3. Listar Todas as Matrículas        ║\n");
         printf("║  4. Histórico de um Aluno             ║\n");
         printf("║  5. Alunos de uma Disciplina          ║\n");
-        printf("║  0. Voltar ao Menu Principal          ║\n");
+        printf("║  10. Voltar ao Menu Principal         ║\n");
         printf("╚═══════════════════════════════════════╝\n");
         printf("Opção: ");
         scanf("%d", &opcao);
@@ -2213,7 +2207,7 @@ void menu_relatorios() {
                 pausar();
                 break;
                 
-            case 0: // Voltar
+            case 10: // Voltar
                 printf("\nVoltando ao menu principal...\n");
                 break;
                 
@@ -2221,7 +2215,7 @@ void menu_relatorios() {
                 printf("\n❌ Opção inválida! Tente novamente.\n");
                 pausar();
         }
-    } while(opcao != 0);
+    } while(opcao != 10);
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -2239,7 +2233,7 @@ void menu_principal() {
         printf("║  2. Gerenciar Disciplinas             ║\n");
         printf("║  3. Gerenciar Matrículas              ║\n");
         printf("║  4. Relatórios                        ║\n");
-        printf("║  0. Sair                              ║\n");
+        printf("║  10. Sair                              ║\n");
         printf("╚═══════════════════════════════════════╝\n");
         printf("Opção: ");
         scanf("%d", &opcao);
@@ -2258,7 +2252,7 @@ void menu_principal() {
             case 4: 
                 menu_relatorios(); 
                 break;
-            case 0: 
+            case 10: 
                 printf("\n╔═══════════════════════════════════════╗\n");
                 printf("║  Sistema encerrado com sucesso!       ║\n");
                 printf("║  Até logo! 👋                         ║\n");
@@ -2268,7 +2262,7 @@ void menu_principal() {
                 printf("\n❌ Opção inválida! Tente novamente.\n");
                 pausar();
         }
-    } while(opcao != 0);
+    } while(opcao != 10);
 }
 int main() {
     
