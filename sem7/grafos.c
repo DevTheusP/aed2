@@ -162,8 +162,95 @@ typedef struct no_lista{
     no_lista* proximo;
 }no_lista;
 
+typedef struct Grafo_lista{
+    no_lista** cabeca;
+    int num_vertices;
+    int capacidade;
+}Grafo_lista;
 
+Grafo_lista* criar_Grafo_lista(int max_v){
+    Grafo_lista* g = (Grafo_lista*)malloc(sizeof(Grafo_lista));
+    g->num_vertices = 0;
+    g->capacidade = max_v;
 
+    g->cabeca = (no_lista*)malloc(max_v * sizeof(no_lista*));
+    for(int i = 0; i < max_v; i++){
+        g->cabeca[i] = NULL;
+    }
+    return g;
+}
+no_lista* novo_no_lista(int dest, double peso){
+    no_lista* novo_no = (no_lista*)malloc(sizeof(no_lista));
+    novo_no->dest = dest;
+    novo_no->peso = peso;
+    novo_no->proximo = NULL;
+    return novo_no;
+}
+void inserir_vertice_lista(Grafo_lista* g, Cidade novaCidade, Cidade* lista_cidades){
+    if(g->num_vertices >= g->capacidade) return;
+    int u = g->num_vertices;
+    g->cabeca[u] = NULL;
+    for (int i = 0; i < u; i++){
+        double dist = calcular_distancia(lista_cidades[i], novaCidade);
+
+        no_lista* nodoA = novo_no_lista(i, dist);
+        nodoA->proximo = g->cabeca[u];
+        g->cabeca[u] = nodoA;
+
+        no_lista* nodoB = novo_no_lista(u, dist);
+        nodoB->proximo = g->cabeca[i];
+        g->cabeca[i] = nodoB;
+
+    }
+    g->num_vertices ++;
+}
+void remover_no_lista(Grafo_lista* g, int v_idx) {
+    if (v_idx < 0 || v_idx >= g->num_vertices) return;
+
+    no_lista* curr = g->cabeca[v_idx];
+    while (curr) {
+        no_lista* temp = curr;
+        curr = curr->proximo;
+        free(temp);
+    }
+
+    
+    for (int i = 0; i < g->num_vertices; i++) {
+        if (i == v_idx) continue; // Pula o removido
+
+        no_lista* prev = NULL;
+        no_lista* node = g->cabeca[i];
+
+        
+        while (node) {
+        
+            if (node->dest == v_idx) {
+                if (prev == NULL) g->cabeca[i] = node->proximo;
+                else prev->proximo = node->proximo;
+                
+                no_lista* toFree = node;
+                node = node->proximo; // Avança
+                free(toFree);
+            }
+            // Caso 2: Aresta aponta para um ID maior que o removido -> DECREMENTAR
+            // (Ex: apontava pro 6, agora aponta pro 5)
+            else {
+                if (node->dest > v_idx) {
+                    node->dest--; 
+                }
+                prev = node;
+                node = node->proximo;
+            }
+        }
+    }
+
+    // Passo C: Shift no array principal (tapar o buraco no array head)
+    for (int i = v_idx; i < g->num_vertices - 1; i++) {
+        g->cabeca[i] = g->cabeca[i+1];
+    }
+    g->cabeca[g->num_vertices - 1] = NULL; // Limpa o último
+    g->num_vertices--;
+}
 
 
 int main() {
